@@ -31,9 +31,10 @@ def find_volumes(vWorker,vInstanceId):
                         if key == 'Ebs':
                             if not vDeviceName == vRootDevice:
                                 vVolumeId=lastitem['Ebs'].get("VolumeId")
-                                az_response=vWorker.describe_volumes(VolumeIds=[vVolumeId,])
-                                vVolumeZone=az_response['Volumes'][0]['AvailabilityZone']
-                                vVolume_list.append([vDeviceName,vVolumeId,vVolumeZone])
+                                volume_response=vWorker.describe_volumes(VolumeIds=[vVolumeId,])
+                                vVolumeZone=volume_response['Volumes'][0]['AvailabilityZone']
+                                vVolumeKeyId=volume_response['Volumes'][0]['KmsKeyId']
+                                vVolume_list.append([vDeviceName,vVolumeId,vVolumeZone,vVolumeKeyId])
         return vVolume_list
     except ClientError as e:
         print(e)
@@ -64,7 +65,6 @@ def snapshot_status(vWorker,vSnapshotId):
         return status_s_response['Snapshots'][0]['State']
     except ClientError as e:
         print(e)
-
 #
 # Create New Volume gp2
 #
@@ -142,8 +142,8 @@ def find_kms_key(vWorker):
           print(e)
 
 def check_args():
-    if len(sys.argv) < 4:
-        print(f'Usage: {sys.argv[0]} profile-name region-name instance-id')
+    if len(sys.argv) < 5:
+        print(f'Usage: {sys.argv[0]} profile-name region-name instance-id kms-key-arn')
         exit()
 
 def seperator():
@@ -156,15 +156,17 @@ def time2sleep():
 #
 # Main Function
 #
-def encrypt_volume(vWorker, vVol, vProfile, vRegion, vEbsKey, vInstanceId):
+def encrypt_volume(vWorker, vVol, vProfile, vRegion, vNewKey, vInstanceId):
     ## This function is to encrypt ebs volumes.
     print(f'Encrypting volume: {vVol}')
+    # vol[0] --> Device Name
+    # vol[1] --> Volume ID
+    # vol[2] --> Volume Zone
     vActiveDeviceName=vVol[0]
     vActiveVolume=vVol[1]
     vActiveVolumeZone=vVol[2]
-    #
-    # Find if volume is encrypted or Io1 volume
-    #
+    vActiveVolumeKeyId=vVol[3]
+    # worker_ec2=connect_aws(vProfile,vRegion,'ec2')
     vActiveVolumeSpecs=volume_specs(vWorker, vActiveVolume)
     vActiveVolumeType=vActiveVolumeSpecs[0]
     vActiveVolumeIops=vActiveVolumeSpecs[1]
@@ -177,8 +179,8 @@ def encrypt_volume(vWorker, vVol, vProfile, vRegion, vEbsKey, vInstanceId):
     #
     # Check if volume is already encrypted
     #
-    if vActiveVolumeEncrypted:
-        print(f'{vActiveVolume} is already encrypted...')
+    if vActiveVolumeKeyId == vNewKey:
+        print(f'{vActiveVolume} is already encrypted with {vNewKey}...')
     else:
         #
         # Create Snapshot
@@ -199,13 +201,13 @@ def encrypt_volume(vWorker, vVol, vProfile, vRegion, vEbsKey, vInstanceId):
         # Encrypt Snapshot
         #
         seperator()
-        vEncryptedSnapshot=copy_snapshot(vWorker,vSourceSnapshot,vEbsKey)
+        vEncryptedSnapshot=copy_snapshot(vWorker,vSourceSnapshot,vNewKey)
         print(f'New encrypted snapshot created: {vEncryptedSnapshot}')
         #
         # Wait till new snapshot becomes available
         #
         seperator()
-        print(f'Waiting for {vEncryptedSnapshot} to become available ...')
+        print(f'Waiting for {vEncryptedSnapshot} to become available...')
         vSnapshotStatus=""
         while vSnapshotStatus != "completed":
             vSnapshotStatus=snapshot_status(vWorker,vEncryptedSnapshot)
@@ -271,7 +273,7 @@ def encrypt_volume(vWorker, vVol, vProfile, vRegion, vEbsKey, vInstanceId):
         print(f'Cleaning up snapshot : {vEncryptedSnapshot}')
         vDeleteSnapshot=delete_snapshot(vWorker,vEncryptedSnapshot)
 #
-# MAIN STARTS HERE
+#  MAIN STARTS HERE
 #
 if __name__ == '__main__':
     #
@@ -284,36 +286,36 @@ if __name__ == '__main__':
     gProfile=sys.argv[1]
     gRegion=sys.argv[2]
     gInstanceId=sys.argv[3]
+    gNewKey=sys.argv[4]
     #
     # Connect AWS
     #
     worker_ec2=connect_aws(gProfile,gRegion,'ec2')
-    worker_kms=connect_aws(gProfile,gRegion,'kms')
+    #worker_kms=connect_aws(gProfile,gRegion,'kms')
     #
     # Find aws/ebs key of the account
     # Will be used in copy_snapshot
     #
-    gEbsKey=find_kms_key(worker_kms)
-    print(f'Following aws/ebs encryption key will be used:')
-    print(f'{gEbsKey}')
+    #gEbsKey=find_kms_key(worker_kms)
+    print(f'Following KMS encryption key will be used:')
+    print(f'{gNewKey}')
     #
     # If only attached volume is boot/root volume, don't touch it
     #
     gSourceVolumeList=find_volumes(worker_ec2,gInstanceId)
     if not gSourceVolumeList:
-        seperator()
-        print(f'Instance has only boot ebs volume...')
+        print(f'Instance has only one boot ebs volume...')
         exit()
     else:
         # print(f'Following volumes found:')
         for vol in gSourceVolumeList:
             # # run ebs encryprion..
-            p = Process(target=encrypt_volume, args=(worker_ec2, vol, gProfile, gRegion, gEbsKey, gInstanceId,))
+            p = Process(target=encrypt_volume, args=(worker_ec2, vol, gProfile, gRegion, gNewKey, gInstanceId,))
             #
-            # Leave some time between AWS API requests 
+            # Leave some time between AWS API requests
             #
             time.sleep(5)
             p.start()
             p.join(timeout=0)
             #if p.is_alive():
-            #    print (f'Process {os.getpid()} is running!')
+            #    print (f'Process {os.getpid()} started...')
