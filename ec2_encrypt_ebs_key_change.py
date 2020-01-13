@@ -309,7 +309,9 @@ if __name__ == '__main__':
     else:
         # print(f'Following volumes found:')
         for vol in gSourceVolumeList:
-            # # run ebs encryprion..
+            # 
+            # Start encryption process
+            #
             p = Process(target=encrypt_volume, args=(worker_ec2, vol, gProfile, gRegion, gNewKey, gInstanceId,))
             #
             # Leave some time between AWS API requests
